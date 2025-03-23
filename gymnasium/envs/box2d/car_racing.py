@@ -3,6 +3,8 @@ __credits__ = ["Andrea PIERRÉ"]
 import math
 from typing import Optional, Union
 
+from PIL import Image
+import os
 import numpy as np
 
 import gymnasium as gym
@@ -231,6 +233,8 @@ class CarRacing(gym.Env, EzPickle):
         self.lap_complete_percent = lap_complete_percent
         self._init_colors()
 
+        self.saved_prev = -1
+        self.renders = len(os.listdir(os.getcwd() + "/renders/"))
         self.contactListener_keepref = FrictionDetector(self, self.lap_complete_percent)
         self.world = Box2D.b2World((0, 0), contactListener=self.contactListener_keepref)
         self.screen: Optional[pygame.Surface] = None
@@ -423,19 +427,24 @@ class CarRacing(gym.Env, EzPickle):
 
         # Red-white border on hard turns
         border = [False] * len(track)
+        lefts = [False] * len(track)
         for i in range(len(track)):
             good = True
+            isleft = True
             oneside = 0
             for neg in range(BORDER_MIN_COUNT):
                 beta1 = track[i - neg - 0][1]
                 beta2 = track[i - neg - 1][1]
+                isleft &= beta1 - beta2 > TRACK_TURN_RATE * 0.2
                 good &= abs(beta1 - beta2) > TRACK_TURN_RATE * 0.2
                 oneside += np.sign(beta1 - beta2)
             good &= abs(oneside) == BORDER_MIN_COUNT
+            lefts[i] = isleft
             border[i] = good
         for i in range(len(track)):
             for neg in range(BORDER_MIN_COUNT):
                 border[i - neg] |= border[i]
+                lefts[i - neg] |= lefts[i]
 
         # Create tiles
         for i in range(len(track)):
@@ -494,6 +503,9 @@ class CarRacing(gym.Env, EzPickle):
                     )
                 )
         self.track = track
+        self.track_inorder = enumerate(track)
+        self.border = border
+        self.lefts = lefts
         return True
 
     def reset(
@@ -584,6 +596,22 @@ class CarRacing(gym.Env, EzPickle):
                 step_reward = -100
 
         if self.render_mode == "human":
+            pos = (self.tile_visited_count + 2) % len(self.border)
+            if pos % 3 == 0: # save frame
+                if self.border[pos]:
+                    tag = "left" if self.lefts[pos] else "right"
+                else:
+                    tag = "straight"
+                if (tag != "straight" \
+                            or pos % 9 == 0) \
+                            and (pos != self.saved_prev):
+                            # save straight less often than turns, don't save same spot twice
+                    print("Saving frame to" + f"/renders/frame-{self.renders}-{tag}.png")
+                    self.saved_prev = pos
+                    arr = self._render("state_pixels")
+                    im = Image.fromarray(arr)
+                    im.save(os.getcwd() + f"/renders/frame-{self.renders}-{tag}.png")
+                    self.renders += 1
             self.render()
         return self.state, step_reward, terminated, truncated, info
 
