@@ -1,8 +1,10 @@
 __credits__ = ["Andrea PIERRÉ"]
 
 import math
-from typing import Optional, Union
+from typing import Literal, Optional, Union, Match
 
+from PIL import Image
+import os
 import numpy as np
 
 import gymnasium as gym
@@ -217,6 +219,8 @@ class CarRacing(gym.Env, EzPickle):
         lap_complete_percent: float = 0.95,
         domain_randomize: bool = False,
         continuous: bool = True,
+        screenshot_path: str = "./renders",
+        screenshot_mode: Literal["state_pixels","rgb_array", "both", "none"] = "none",
     ):
         EzPickle.__init__(
             self,
@@ -225,12 +229,23 @@ class CarRacing(gym.Env, EzPickle):
             lap_complete_percent,
             domain_randomize,
             continuous,
+            screenshot_path,
+            screenshot_mode,
         )
         self.continuous = continuous
         self.domain_randomize = domain_randomize
         self.lap_complete_percent = lap_complete_percent
         self._init_colors()
+        self.ss_path = screenshot_path
+        self.ss_mode = screenshot_mode
+        self.ss_mode_lst = []
+        if self.ss_mode == "both":
+            self.ss_mode_lst = ["rgb_array", "state_pixels"]
+        else:
+            self.ss_mode_lst = [self.ss_mode]
 
+        self.saved_prev = -1
+        self.renders = len(os.listdir(self.ss_path))
         self.contactListener_keepref = FrictionDetector(self, self.lap_complete_percent)
         self.world = Box2D.b2World((0, 0), contactListener=self.contactListener_keepref)
         self.screen: Optional[pygame.Surface] = None
@@ -423,19 +438,24 @@ class CarRacing(gym.Env, EzPickle):
 
         # Red-white border on hard turns
         border = [False] * len(track)
+        lefts = [False] * len(track)
         for i in range(len(track)):
             good = True
+            isleft = True
             oneside = 0
             for neg in range(BORDER_MIN_COUNT):
                 beta1 = track[i - neg - 0][1]
                 beta2 = track[i - neg - 1][1]
+                isleft &= beta1 - beta2 > TRACK_TURN_RATE * 0.2
                 good &= abs(beta1 - beta2) > TRACK_TURN_RATE * 0.2
                 oneside += np.sign(beta1 - beta2)
             good &= abs(oneside) == BORDER_MIN_COUNT
+            lefts[i] = isleft
             border[i] = good
         for i in range(len(track)):
             for neg in range(BORDER_MIN_COUNT):
                 border[i - neg] |= border[i]
+                lefts[i - neg] |= lefts[i]
 
         # Create tiles
         for i in range(len(track)):
@@ -494,6 +514,9 @@ class CarRacing(gym.Env, EzPickle):
                     )
                 )
         self.track = track
+        self.track_inorder = enumerate(track)
+        self.border = border
+        self.lefts = lefts
         return True
 
     def reset(
@@ -585,6 +608,27 @@ class CarRacing(gym.Env, EzPickle):
 
         if self.render_mode == "human":
             self.render()
+        if self.ss_mode != "none":
+            pos = (self.tile_visited_count + 2) % len(self.border)
+            if pos % 2 == 0: # save frame
+                if self.border[pos]:
+                    tag = "left" if self.lefts[pos] else "right"
+                else:
+                    tag = "straight"
+                if (tag != "straight" \
+                            or pos % 5 == 0) \
+                            and (pos != self.saved_prev):
+                            # save straight less often than turns, don't save same spot twice
+                    if self.verbose:
+                        print("Saving frame to" + f"{os.sep}{self.ss_path}{os.sep}{self.ss_mode}-{self.renders}-{tag}.png")
+                    else:
+                        print(f"Saving frame # {self.renders}", end="\r")
+                    self.saved_prev = pos
+                    for ss_mode in self.ss_mode_lst:
+                        arr = self._render(ss_mode)
+                        im = Image.fromarray(arr)
+                        im.save(os.sep.join((self.ss_path, f"{ss_mode}-{self.renders}-{tag}.png")))
+                        self.renders += 1
         return self.state, step_reward, terminated, truncated, info
 
     def render(self):
@@ -831,7 +875,7 @@ if __name__ == "__main__":
             if event.type == pygame.QUIT:
                 quit = True
 
-    env = CarRacing(render_mode="human")
+    env = CarRacing(render_mode="human", screenshot_mode="state_pixels", verbose=True)
 
     quit = False
     while not quit:
